@@ -1,0 +1,9 @@
+{
+  "name": "herdr-harness-panel",
+  "version": "0.1.0",
+  "description": "herdr side panel for coding-agent harnesses (Claude Code, Codex, OpenCode, Antigravity)",
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": { "test": "bun test", "panel": "bun src/index.ts" },
+  "repository": { "type": "git", "url": "git+https://github.com/dupremathieu/herdr-harness-panel.git" }
+}

@@ -1,0 +1,21 @@
+{
+  "data": [
+    {
+      "id": "ses_child1",
+      "parentID": "ses_test0000000000000000",
+      "title": "Explore code",
+      "agent": "explore",
+      "cost": 0.02,
+      "outcome": null
+    },
+    {
+      "id": "ses_child2",
+      "parentID": "ses_test0000000000000000",
+      "title": "Check patch",
+      "agent": "checker",
+      "cost": 0.03,
+      "outcome": "failed"
+    }
+  ],
+  "cursor": { "previous": null, "next": null }
+}

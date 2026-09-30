@@ -1,0 +1,7 @@
+{
+  "location": { "directory": "/work/project" },
+  "data": [
+    { "name": "demo", "status": { "status": "connected" } },
+    { "name": "offline", "status": { "status": "disabled" } }
+  ]
+}

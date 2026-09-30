@@ -1,0 +1,17 @@
+{
+  "location": { "directory": "/work/project" },
+  "data": [
+    {
+      "id": "model-x",
+      "providerID": "prov",
+      "name": "Model X",
+      "capabilities": { "tools": true, "input": ["text"], "output": ["text"] },
+      "variants": [{ "id": "default" }],
+      "time": { "released": 0 },
+      "cost": [],
+      "status": "active",
+      "enabled": true,
+      "limit": { "context": 200000, "output": 100000 }
+    }
+  ]
+}

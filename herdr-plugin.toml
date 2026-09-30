@@ -1,0 +1,30 @@
+id = "local.harness-panel"
+name = "harness-panel"
+version = "0.1.0"
+min_herdr_version = "0.7.5"
+platforms = ["linux", "macos"]
+description = "Side panel (session, turn stats, subagents, MCP) following the focused agent; adapters per harness."
+
+[[panes]]
+id = "panel"
+title = "harness-panel"
+placement = "split"
+command = ["sh", "-c", "exec bun \"$HERDR_PLUGIN_ROOT/src/index.ts\""]
+
+[[actions]]
+id = "toggle"
+title = "harness-panel: toggle"
+contexts = ["pane", "workspace"]
+command = ["bash", "herdr/pane.sh", "toggle"]
+
+[[actions]]
+id = "open"
+title = "harness-panel: open"
+contexts = ["pane", "workspace"]
+command = ["bash", "herdr/pane.sh", "open"]
+
+[[actions]]
+id = "close"
+title = "harness-panel: close"
+contexts = ["pane", "workspace"]
+command = ["bash", "herdr/pane.sh", "close"]

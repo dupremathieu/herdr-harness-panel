@@ -1,0 +1,7 @@
+{"timestamp":"2026-01-01T00:00:00.000Z","type":"session_meta","payload":{"session_id":"fixture-session","cwd":"/workspace/demo","model_provider":"openai","context_window":128000}}
+{"timestamp":"2026-01-01T00:00:01.000Z","type":"turn_context","payload":{"model":"gpt-6-mini","effort":"medium","model_context_window":128000}}
+{"timestamp":"2026-01-01T00:00:02.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Summarize the demo project."}]}}
+{"timestamp":"2026-01-01T00:00:03.000Z","type":"response_item","payload":{"type":"function_call","name":"read_file","call_id":"call-1","arguments":"{}"}}
+{"timestamp":"2026-01-01T00:00:05.000Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call-1","output":"ok"}}
+{"timestamp":"2026-01-01T00:00:06.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"The demo project is ready."}]}}
+{"timestamp":"2026-01-01T00:00:06.100Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":150,"cached_input_tokens":30,"output_tokens":16},"last_token_usage":{"input_tokens":120,"cached_input_tokens":30,"output_tokens":16},"model_context_window":128000}}}
