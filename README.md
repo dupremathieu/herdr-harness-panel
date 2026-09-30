@@ -84,7 +84,7 @@ Without it the panel still shows turn stats, subagents and MCP from the session 
 | turn stats | ✓ | ✓ | ✓ | steps, timings | steps, output tokens, timings |
 | subagents | ✓ | – | ✓ | ✓ | ✓ |
 | MCP (configured) | ✓ | ✓ | ✓ | ✓ | ✓ |
-| usage limits | 5h / 7d | – | – | – | AI credits |
+| usage limits | 5h / 7d | 5h / 7d | – | – | AI credits |
 
 ### Copilot quota
 The AI-credit quota comes from GitHub's `copilot_internal/user` endpoint, an **undocumented** API that

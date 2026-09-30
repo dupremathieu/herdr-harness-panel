@@ -3,7 +3,7 @@
  * Supported: model/effort, context tokens/window, session duration, turn input/output,
  * cache ratio, model/tool time, steps, project git status, and configured MCP names.
  * Unavailable/unreliable here: session or turn cost, fast mode, child-agent status,
- * live MCP health, and provider quota windows (the local files do not expose these).
+ * live MCP health.
  */
 import { closeSync, existsSync, openSync, readFileSync, readdirSync, readSync, statSync } from "node:fs";
 import { homedir } from "node:os";
@@ -14,6 +14,7 @@ import type { Adapter, AgentContext } from "./types";
 
 const SESSIONS_DIR = join(homedir(), ".codex", "sessions");
 const CONFIG_PATH = join(homedir(), ".codex", "config.toml");
+const MODELS_CACHE_PATH = join(homedir(), ".codex", "models_cache.json");
 type Row = { type?: string; timestamp?: string; payload?: any };
 type Usage = { input_tokens?: number; cached_input_tokens?: number; output_tokens?: number; reasoning_output_tokens?: number };
 
@@ -27,6 +28,27 @@ const parseRows = (text: string): Row[] => {
 	}
 	return rows;
 };
+
+export function parseCodexModelContext(json: string, model: string): number | undefined {
+	try {
+		const catalog = JSON.parse(json);
+		const match = catalog.models?.find((entry: any) => entry.slug === model);
+		return number(match?.context_window);
+	} catch { return undefined; }
+}
+
+let modelsCacheMtime = -1;
+let modelsCacheText = "";
+function modelContextWindow(model: string): number | undefined {
+	try {
+		const mtime = statSync(MODELS_CACHE_PATH).mtimeMs;
+		if (mtime !== modelsCacheMtime) {
+			modelsCacheText = readFileSync(MODELS_CACHE_PATH, "utf8");
+			modelsCacheMtime = mtime;
+		}
+		return parseCodexModelContext(modelsCacheText, model);
+	} catch { return undefined; }
+}
 
 function tailText(path: string, maxBytes = 4 * 1024 * 1024): string {
 	let fd: number | undefined;
@@ -114,13 +136,14 @@ function findSession(ctx: AgentContext): string | undefined {
 }
 
 /** Pure: Codex session JSONL -> model/session/turn fields. */
-export function parseCodexSession(jsonl: string): Partial<PanelSnapshot> {
+export function parseCodexSession(jsonl: string, sessionStartedAt?: number): Partial<PanelSnapshot> {
 	const rows = parseRows(jsonl);
 	const meta = rows.find((r) => r.type === "session_meta")?.payload ?? {};
 	const turns = rows.filter((r) => r.type === "turn_context");
 	const lastTurn = turns[turns.length - 1]?.payload ?? {};
 	const counts = rows.filter((r) => r.type === "event_msg" && r.payload?.type === "token_count");
-	const count = counts[counts.length - 1]?.payload?.info ?? {};
+	const latestCount = counts[counts.length - 1]?.payload;
+	const count = latestCount?.info ?? {};
 	const lastUsage: Usage = count.last_token_usage ?? {};
 	const ctxTokens = number(lastUsage.input_tokens);
 	const ctxMax = number(count.model_context_window) ?? number(lastTurn.model_context_window) ?? number(meta.context_window);
@@ -131,6 +154,16 @@ export function parseCodexSession(jsonl: string): Partial<PanelSnapshot> {
 	if (ctxTokens !== undefined || ctxMax !== undefined) {
 		snap.session = { ctxTokens, ctxMax, ctxPct: ctxTokens !== undefined && ctxMax ? Math.min(100, Math.round(ctxTokens / ctxMax * 100)) : undefined };
 	}
+	const limits = [...rows].reverse().find((r) => r.type === "event_msg" && r.payload?.type === "token_count" && r.payload?.rate_limits)?.payload?.rate_limits;
+	const windows = ([
+		["5h", limits?.primary],
+		["7d", limits?.secondary],
+	] as const).flatMap(([label, window]) => {
+		const pct = number(window?.used_percent);
+		if (pct === undefined) return [];
+		return [{ label, pct, resetsAt: number(window?.resets_at) }];
+	});
+	if (windows.length) snap.usage = [{ provider: "Codex", windows }];
 	const promptIndex = (() => {
 		for (let i = rows.length - 1; i >= 0; i--) {
 			const p = rows[i].payload;
@@ -143,35 +176,47 @@ export function parseCodexSession(jsonl: string): Partial<PanelSnapshot> {
 		const tokenRows = relevant.filter((r) => r.type === "event_msg" && r.payload?.type === "token_count");
 		const info = tokenRows[tokenRows.length - 1]?.payload?.info;
 		const usage: Usage = info?.last_token_usage ?? {};
-		const input = number(usage.input_tokens);
-		const output = number(usage.output_tokens);
-		const read = number(usage.cached_input_tokens);
+		const records = relevant.filter((r) => r.type === "token_usage_record");
+		const input = records.length ? records.reduce((sum, r) => sum + (number(r.payload?.usage?.input_tokens) ?? 0), 0) : number(usage.input_tokens);
+		const output = records.length ? records.reduce((sum, r) => sum + (number(r.payload?.usage?.output_tokens) ?? 0), 0) : number(usage.output_tokens);
+		const read = records.length ? records.reduce((sum, r) => sum + (number(r.payload?.usage?.cached_input_tokens) ?? 0), 0) : number(usage.cached_input_tokens);
 		const callStarts = new Map<string, number>();
 		let toolMs = 0;
 		let steps = 0;
-		let t0 = timestamp(rows[promptIndex].timestamp);
-		let lastTs = t0;
+		let modelStart = timestamp(rows[promptIndex].timestamp);
+		let modelMs = 0;
+		let lastResponseRate: number | undefined;
 		for (const row of relevant) {
 			const t = timestamp(row.timestamp);
-			if (Number.isFinite(t)) lastTs = Number.isFinite(lastTs) ? Math.max(lastTs, t) : t;
+			if (row.type === "token_usage_record") {
+				const duration = t - modelStart;
+				const tokens = number(row.payload?.usage?.output_tokens);
+				if (Number.isFinite(duration) && duration > 0) {
+					modelMs += duration;
+					if (tokens !== undefined) lastResponseRate = Math.round(tokens / (duration / 1000) * 10) / 10;
+				}
+				steps++;
+				modelStart = t;
+				continue;
+			}
 			if (row.type !== "response_item") continue;
 			const p = row.payload;
-			if (p?.type === "message" && p.role === "assistant") steps++;
-			if (p?.type === "function_call" && typeof p.call_id === "string" && Number.isFinite(t)) callStarts.set(p.call_id, t);
-			if (p?.type === "function_call_output" && typeof p.call_id === "string" && callStarts.has(p.call_id) && Number.isFinite(t)) {
+			if (p?.type === "message" && p.role === "assistant" && !records.length) steps++;
+			if ((p?.type === "function_call" || p?.type === "custom_tool_call") && typeof p.call_id === "string" && Number.isFinite(t)) callStarts.set(p.call_id, t);
+			if ((p?.type === "function_call_output" || p?.type === "custom_tool_call_output") && typeof p.call_id === "string" && callStarts.has(p.call_id) && Number.isFinite(t)) {
 				toolMs += Math.max(0, t - callStarts.get(p.call_id)!);
 				callStarts.delete(p.call_id);
+				modelStart = t;
 			}
 		}
-		const elapsed = Number.isFinite(t0) && Number.isFinite(lastTs) ? Math.max(0, lastTs - t0) : undefined;
-		const modelMs = elapsed === undefined ? undefined : Math.max(0, elapsed - toolMs);
-		const turn: NonNullable<PanelSnapshot["turn"]> = { tokensIn: input, tokensOut: output, steps: steps || (info ? 1 : undefined), toolMs: toolMs || undefined, modelMs };
+		const turn: NonNullable<PanelSnapshot["turn"]> = { tokensIn: input, tokensOut: output, steps: steps || (info ? 1 : undefined), toolMs: toolMs || undefined, modelMs: records.length ? modelMs : undefined };
 		if (input && read !== undefined) turn.cacheHit = Math.round(read / input * 100);
-		if (modelMs && output) turn.tokPerSec = Math.round(output / (modelMs / 1000) * 10) / 10;
+		if (lastResponseRate !== undefined) turn.tokPerSec = lastResponseRate;
 		snap.turn = turn;
 	}
 	const times = rows.map((r) => timestamp(r.timestamp)).filter(Number.isFinite);
-	const started = timestamp(meta.timestamp) || times[0];
+	const metaTime = timestamp(meta.timestamp);
+	const started = sessionStartedAt !== undefined && Number.isFinite(sessionStartedAt) ? sessionStartedAt : Number.isFinite(metaTime) ? metaTime : times[0];
 	const latest = times.length ? Math.max(...times) : Number.NaN;
 	const durationMs = Number.isFinite(started) && Number.isFinite(latest) ? Math.max(0, latest - started) : undefined;
 	if (durationMs !== undefined) snap.session = { ...snap.session, durationMs };
@@ -196,10 +241,16 @@ export const codexAdapter: Adapter = {
 		try {
 			const path = findSession(ctx);
 			if (path) {
-				const parsed = parseCodexSession(tailText(path));
+				const metaLine = parseRows(firstLine(path))[0];
+				const parsed = parseCodexSession(tailText(path), timestamp(metaLine?.timestamp));
 				Object.assign(snap, parsed);
 				if (!snap.model) snap.model = parseCodexSession(headText(path)).model;
-				const metaLine = parseRows(firstLine(path))[0];
+				const modelMax = snap.model?.name ? modelContextWindow(snap.model.name) : undefined;
+				if (modelMax && snap.session) {
+					snap.session.ctxMax = modelMax;
+					if (snap.session.ctxTokens !== undefined)
+						snap.session.ctxPct = Math.min(100, Math.round(snap.session.ctxTokens / modelMax * 100));
+				}
 				const cwd = metaLine?.payload?.cwd;
 				if (typeof cwd === "string") snap.project!.cwd = cwd;
 			}
