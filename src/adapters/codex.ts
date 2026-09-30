@@ -28,7 +28,7 @@ const parseRows = (text: string): Row[] => {
 	return rows;
 };
 
-function tailText(path: string, maxBytes = 512 * 1024): string {
+function tailText(path: string, maxBytes = 4 * 1024 * 1024): string {
 	let fd: number | undefined;
 	try {
 		const size = statSync(path).size;
@@ -42,13 +42,34 @@ function tailText(path: string, maxBytes = 512 * 1024): string {
 	finally { if (fd !== undefined) try { closeSync(fd); } catch {} }
 }
 
-function firstLine(path: string): string {
+function headText(path: string, maxBytes = 128 * 1024): string {
 	let fd: number | undefined;
 	try {
 		fd = openSync(path, "r");
-		const buffer = Buffer.alloc(8192);
-		const size = readSync(fd, buffer, 0, buffer.length, 0);
-		return buffer.toString("utf8", 0, size).split("\n", 1)[0] ?? "";
+		const buffer = Buffer.alloc(maxBytes);
+		const size = readSync(fd, buffer, 0, maxBytes, 0);
+		const text = buffer.toString("utf8", 0, size);
+		return size === maxBytes ? text.slice(0, text.lastIndexOf("\n") + 1) : text;
+	} catch { return ""; }
+	finally { if (fd !== undefined) try { closeSync(fd); } catch {} }
+}
+
+export function firstLine(path: string): string {
+	let fd: number | undefined;
+	try {
+		fd = openSync(path, "r");
+		const chunks: Buffer[] = [];
+		let offset = 0;
+		while (offset < 256 * 1024) {
+			const buffer = Buffer.alloc(8192);
+			const size = readSync(fd, buffer, 0, buffer.length, offset);
+			if (!size) break;
+			const newline = buffer.subarray(0, size).indexOf(10);
+			chunks.push(buffer.subarray(0, newline < 0 ? size : newline));
+			if (newline >= 0) break;
+			offset += size;
+		}
+		return Buffer.concat(chunks).toString("utf8");
 	} catch { return ""; }
 	finally { if (fd !== undefined) try { closeSync(fd); } catch {} }
 }
@@ -101,8 +122,7 @@ export function parseCodexSession(jsonl: string): Partial<PanelSnapshot> {
 	const counts = rows.filter((r) => r.type === "event_msg" && r.payload?.type === "token_count");
 	const count = counts[counts.length - 1]?.payload?.info ?? {};
 	const lastUsage: Usage = count.last_token_usage ?? {};
-	const ctxTokens = number(lastUsage.input_tokens) === undefined ? undefined :
-		(number(lastUsage.input_tokens) ?? 0) + (number(lastUsage.cached_input_tokens) ?? 0);
+	const ctxTokens = number(lastUsage.input_tokens);
 	const ctxMax = number(count.model_context_window) ?? number(lastTurn.model_context_window) ?? number(meta.context_window);
 	const snap: Partial<PanelSnapshot> = {};
 	const modelName = typeof lastTurn.model === "string" ? lastTurn.model :
@@ -123,7 +143,7 @@ export function parseCodexSession(jsonl: string): Partial<PanelSnapshot> {
 		const tokenRows = relevant.filter((r) => r.type === "event_msg" && r.payload?.type === "token_count");
 		const info = tokenRows[tokenRows.length - 1]?.payload?.info;
 		const usage: Usage = info?.last_token_usage ?? {};
-		const input = number(usage.input_tokens) === undefined ? undefined : (number(usage.input_tokens) ?? 0) + (number(usage.cached_input_tokens) ?? 0);
+		const input = number(usage.input_tokens);
 		const output = number(usage.output_tokens);
 		const read = number(usage.cached_input_tokens);
 		const callStarts = new Map<string, number>();
@@ -178,6 +198,7 @@ export const codexAdapter: Adapter = {
 			if (path) {
 				const parsed = parseCodexSession(tailText(path));
 				Object.assign(snap, parsed);
+				if (!snap.model) snap.model = parseCodexSession(headText(path)).model;
 				const metaLine = parseRows(firstLine(path))[0];
 				const cwd = metaLine?.payload?.cwd;
 				if (typeof cwd === "string") snap.project!.cwd = cwd;

@@ -160,6 +160,18 @@ function readJson(path: string): any {
 	}
 }
 
+function contextLimit(payload: any): number | undefined {
+	const config = readJson(
+		process.env.HARNESS_PANEL_STATUSLINE_CONFIG ??
+			join(homedir(), ".claude", "scripts", "statusline", "statusline.config.json"),
+	);
+	const configured = config?.context;
+	if (configured?.usePayloadContextWindow &&
+		Number.isFinite(configured.maxContextTokens) && configured.maxContextTokens > 0)
+		return configured.maxContextTokens;
+	return payload?.context_window?.context_window_size;
+}
+
 function configuredMcp(cwd: string): string[] {
 	const names = new Set<string>();
 	const sources = [
@@ -213,10 +225,13 @@ export const claudeAdapter: Adapter = {
 						(cur.cache_creation_input_tokens ?? 0) +
 						(cur.cache_read_input_tokens ?? 0)
 					: undefined;
+				const ctxMax = contextLimit(payload);
 				snap.session = {
 					ctxTokens: used,
-					ctxMax: cw?.context_window_size,
-					ctxPct: cw?.used_percentage,
+					ctxMax,
+					ctxPct: used !== undefined && ctxMax
+						? Math.min(100, Math.round((used / ctxMax) * 100))
+						: undefined,
 					cost: payload.cost?.total_cost_usd,
 					durationMs: payload.cost?.total_duration_ms,
 				};

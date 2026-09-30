@@ -22,6 +22,7 @@ function until(epochSec: number): string {
 	if (ms <= 0) return "now";
 	const h = Math.floor(ms / 3600000);
 	const m = Math.floor((ms % 3600000) / 60000);
+	if (h >= 24) return `${Math.floor(h / 24)}d${h % 24}h`;
 	return h > 0 ? `${h}h${m}m` : `${m}m`;
 }
 
@@ -64,14 +65,16 @@ export function renderPanel(s: PanelSnapshot, width: number): string[] {
 
 	for (const u of s.usage ?? []) {
 		out.push(...header(`Usage · ${u.provider}`, w));
-		for (const win of u.windows)
+		for (const win of u.windows) {
 			out.push(
 				row(
-					win.label + (win.resetsAt ? ` (${until(win.resetsAt)})` : ""),
-					win.detail ?? `${win.pct}%`,
+					win.label,
+					win.detail ?? `${win.pct}% used · ${Math.max(0, 100 - win.pct)}% left`,
 					w,
 				),
 			);
+			if (win.resetsAt) out.push(row("reset", `in ${until(win.resetsAt)}`, w));
+		}
 	}
 
 	if (s.turn) {
