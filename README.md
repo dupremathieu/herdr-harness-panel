@@ -1,5 +1,7 @@
 # herdr-harness-panel
 
+[![test](https://github.com/dupremathieu/herdr-harness-panel/actions/workflows/test.yml/badge.svg)](https://github.com/dupremathieu/herdr-harness-panel/actions/workflows/test.yml)
+
 A side panel for [herdr](https://herdr.dev) that follows the focused coding agent and shows what
 the agent's own UI hides: context usage, turn stats, subagents, MCP servers and usage limits.
 It works with several harnesses through small **adapters**: Claude Code, Codex, OpenCode (v2)
