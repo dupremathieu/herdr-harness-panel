@@ -68,7 +68,7 @@ export function renderPanel(s: PanelSnapshot, width: number): string[] {
 			out.push(
 				row(
 					win.label + (win.resetsAt ? ` (${until(win.resetsAt)})` : ""),
-					`${win.pct}%`,
+					win.detail ?? `${win.pct}%`,
 					w,
 				),
 			);

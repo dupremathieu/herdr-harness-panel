@@ -44,5 +44,13 @@ export interface SubagentInfo {
 
 export interface UsageProvider {
 	provider: string;
-	windows: { label: string; pct: number; resetsAt?: number }[];
+	windows: {
+		label: string;
+		/** 0-100 used */
+		pct: number;
+		/** epoch seconds */
+		resetsAt?: number;
+		/** shown instead of pct when set, e.g. "74264 / 75000 left" */
+		detail?: string;
+	}[];
 }

@@ -4,8 +4,8 @@
 
 A side panel for [herdr](https://herdr.dev) that follows the focused coding agent and shows what
 the agent's own UI hides: context usage, turn stats, subagents, MCP servers and usage limits.
-It works with several harnesses through small **adapters**: Claude Code, Codex, OpenCode (v2)
-and Antigravity CLI (`agy`).
+It works with several harnesses through small **adapters**: Claude Code, Codex, OpenCode (v2),
+Antigravity CLI (`agy`) and GitHub Copilot CLI.
 
 ```
 claude · Sonnet 5.5
@@ -61,6 +61,7 @@ cc()  { _panel; claude "$@"; }
 cdx() { _panel; codex "$@"; }
 oc()  { _panel; opencode "$@"; }
 ag()  { _panel; agy "$@"; }
+cop() { _panel; copilot "$@"; }
 ```
 
 ### Claude Code data
@@ -76,14 +77,19 @@ passthrough, which saves the JSON payload per session and re-emits it:
 Without it the panel still shows turn stats, subagents and MCP from the session transcript.
 
 ## What each adapter provides
-| | Claude | Codex | OpenCode | agy |
-|---|---|---|---|---|
-| model / effort | ✓ | ✓ | ✓ | ✓ |
-| context, cost | ✓ | context | ✓ | – |
-| turn stats | ✓ | ✓ | ✓ | steps, timings |
-| subagents | ✓ | – | ✓ | ✓ |
-| MCP (configured) | ✓ | ✓ | ✓ | ✓ |
-| usage limits | 5h / 7d | – | – | – |
+| | Claude | Codex | OpenCode | agy | Copilot |
+|---|---|---|---|---|---|
+| model / effort | ✓ | ✓ | ✓ | ✓ | ✓ |
+| context, cost | ✓ | context | ✓ | – | – |
+| turn stats | ✓ | ✓ | ✓ | steps, timings | steps, output tokens, timings |
+| subagents | ✓ | – | ✓ | ✓ | ✓ |
+| MCP (configured) | ✓ | ✓ | ✓ | ✓ | ✓ |
+| usage limits | 5h / 7d | – | – | – | AI credits |
+
+### Copilot quota
+The AI-credit quota comes from GitHub's `copilot_internal/user` endpoint, an **undocumented** API that
+may change. It is called with your `GH_TOKEN` / `GITHUB_TOKEN` or the token from `gh auth token`,
+at most once every 2 minutes. Set `HARNESS_PANEL_NO_NETWORK=1` to disable it.
 
 Each adapter file documents exactly which fields it supports and why others are impossible.
 

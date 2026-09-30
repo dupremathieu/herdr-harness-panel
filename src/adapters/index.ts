@@ -1,6 +1,7 @@
 import { agyAdapter } from "./agy";
 import { claudeAdapter } from "./claude";
 import { codexAdapter } from "./codex";
+import { copilotAdapter } from "./copilot";
 import { opencodeAdapter } from "./opencode";
 import type { Adapter, AgentContext } from "./types";
 
@@ -10,6 +11,7 @@ export const adapters: Adapter[] = [
 	codexAdapter,
 	opencodeAdapter,
 	agyAdapter,
+	copilotAdapter,
 ];
 
 export function pickAdapter(agent: AgentContext): Adapter | undefined {

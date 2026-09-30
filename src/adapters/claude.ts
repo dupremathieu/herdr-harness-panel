@@ -39,7 +39,7 @@ export type TranscriptStats = Pick<PanelSnapshot, "turn" | "subagents"> & {
 	mcpToolServers: string[];
 };
 
-// Tools that wait on the human, not on compute: excluded from tool time.
+// Tools that wait on the human, not on compute: excluded from tool and model time.
 const WAIT_TOOLS = new Set(["AskUserQuestion", "ExitPlanMode"]);
 
 const blocks = (e: Entry): Block[] =>
@@ -103,7 +103,9 @@ export function parseTranscript(jsonl: string): TranscriptStats {
 		const t0 = ts(main[start]);
 		const usageByReq = new Map<string, NonNullable<Entry["message"]>["usage"]>();
 		const toolStart = new Map<string, number>();
+		const waitStart = new Map<string, number>();
 		let toolMs = 0;
+		let waitMs = 0;
 		let lastTs = t0;
 		for (const e of main.slice(start + 1)) {
 			const t = ts(e);
@@ -112,15 +114,16 @@ export function parseTranscript(jsonl: string): TranscriptStats {
 				const key = e.requestId ?? e.message?.id ?? String(usageByReq.size);
 				if (e.message?.usage) usageByReq.set(key, e.message.usage);
 				for (const b of blocks(e))
-					if (b.type === "tool_use" && b.id && !WAIT_TOOLS.has(b.name ?? ""))
-						toolStart.set(b.id, t);
+					if (b.type === "tool_use" && b.id)
+						(WAIT_TOOLS.has(b.name ?? "") ? waitStart : toolStart).set(b.id, t);
 			} else if (e.type === "user") {
 				for (const b of blocks(e)) {
 					const s = b.tool_use_id ? toolStart.get(b.tool_use_id) : undefined;
-					if (s !== undefined && !Number.isNaN(t) && !Number.isNaN(s)) {
+					if (s !== undefined && !Number.isNaN(t) && !Number.isNaN(s))
 						toolMs += Math.max(0, t - s);
-						toolStart.delete(b.tool_use_id!);
-					}
+					const w = b.tool_use_id ? waitStart.get(b.tool_use_id) : undefined;
+					if (w !== undefined && !Number.isNaN(t) && !Number.isNaN(w))
+						waitMs += Math.max(0, t - w);
 				}
 			}
 		}
@@ -136,7 +139,7 @@ export function parseTranscript(jsonl: string): TranscriptStats {
 			output += u?.output_tokens ?? 0;
 		}
 		const total = Number.isNaN(lastTs - t0) ? 0 : lastTs - t0;
-		const modelMs = Math.max(0, total - toolMs);
+		const modelMs = Math.max(0, total - toolMs - waitMs);
 		turn.steps = usageByReq.size;
 		turn.tokensIn = input;
 		turn.tokensOut = output;
