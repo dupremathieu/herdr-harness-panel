@@ -12,6 +12,8 @@
  * - subagents: child sessions from conversation_summaries.db (parent_conversation_id) and invoke_subagent calls
  * - mcp.total, mcp.servers: configured MCP servers from ~/.gemini/config/mcp_config.json,
  *   ~/.gemini/antigravity-cli/mcp_config.json, and workspace mcp_config.json / .mcp.json
+ * - usage: Gemini quota windows (5h, 7d) fetched from the local LanguageServer via Connect RPC
+ *   (RetrieveUserQuotaSummary) using the process environment or discovered credentials
  *
  * Unsupported / impossible fields (and rationale):
  * - session.ctxTokens, ctxMax, ctxPct: Antigravity transcripts and logs do not record token counts;
@@ -20,9 +22,6 @@
  * - turn.tokensIn, tokensOut, tokPerSec, cacheHit: token usage is not emitted in transcript.jsonl.
  * - model.fast: fast mode indicator is not exposed in agy local configurations.
  * - mcp.up: local config files do not maintain live connection state for MCP servers.
- * - usage: quota windows and rate limits are managed dynamically in-memory by the LanguageServer
- *   process via gRPC/HTTPS with ephemeral ports and CSRF auth, not stored in static files,
- *   and querying running daemons would exceed the < 500 ms adapter budget and break offline/static parsing.
  */
 
 import { closeSync, existsSync, openSync, readFileSync, readdirSync, readSync, statSync } from "node:fs";
@@ -30,7 +29,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import { getGitStatus } from "../lib/git";
-import type { PanelSnapshot, SubagentInfo } from "../model";
+import type { PanelSnapshot, SubagentInfo, UsageProvider } from "../model";
 import type { Adapter, AgentContext } from "./types";
 
 export const AGY_DATA_DIR =
@@ -110,7 +109,9 @@ export function parseAgyTranscript(jsonl: string): Partial<PanelSnapshot> {
 
 	// 1. Model & effort from USER_SETTINGS_CHANGE
 	for (let i = entries.length - 1; i >= 0; i--) {
-		const content = entries[i].content;
+		const entry = entries[i];
+		if (entry.source === "MODEL" && entry.type === "GENERIC") continue;
+		const content = entry.content;
 		if (typeof content === "string" && content.includes("Model Selection")) {
 			const m = parseModelSetting(content);
 			if (m) {
@@ -477,6 +478,223 @@ export function findAgyMcpServers(cwd: string, dataDir: string): string[] {
 	return [...names];
 }
 
+/** Pure: parse LanguageServer RetrieveUserQuotaSummary JSON into UsageProvider array. */
+export function parseAgyQuota(input: unknown): UsageProvider[] {
+	let data = input;
+	if (typeof data === "string") {
+		try {
+			data = JSON.parse(data);
+		} catch {
+			return [];
+		}
+	}
+	if (!data || typeof data !== "object") return [];
+
+	const groups = (data as any)?.response?.groups ?? (data as any)?.groups;
+	if (!Array.isArray(groups)) return [];
+
+	const providers: UsageProvider[] = [];
+
+	for (const group of groups) {
+		if (!group || typeof group !== "object") continue;
+		const displayName = typeof group.displayName === "string" ? group.displayName : "";
+		const buckets = Array.isArray(group.buckets) ? group.buckets : [];
+		if (buckets.length === 0) continue;
+
+		const windows: UsageProvider["windows"] = [];
+		for (const bucket of buckets) {
+			if (!bucket || typeof bucket !== "object") continue;
+			const remaining = typeof bucket.remainingFraction === "number" ? bucket.remainingFraction : 1;
+			const pct = Math.max(0, Math.min(100, Math.round((1 - remaining) * 100)));
+			const rawWindow = typeof bucket.window === "string" ? bucket.window : "";
+			const label = rawWindow === "weekly" ? "7d" : rawWindow || bucket.bucketId || "limit";
+			const resetsAt = bucket.resetTime ? Math.floor(Date.parse(bucket.resetTime) / 1000) : undefined;
+
+			windows.push({
+				label,
+				pct,
+				resetsAt: resetsAt && !Number.isNaN(resetsAt) ? resetsAt : undefined,
+			});
+		}
+
+		if (windows.length === 0) continue;
+
+		const order = ["5h", "7d"];
+		windows.sort((a, b) => {
+			const ia = order.indexOf(a.label);
+			const ib = order.indexOf(b.label);
+			if (ia !== -1 && ib !== -1) return ia - ib;
+			if (ia !== -1) return -1;
+			if (ib !== -1) return 1;
+			return a.label.localeCompare(b.label);
+		});
+
+		let providerName = displayName;
+		if (/gemini/i.test(displayName)) {
+			providerName = "Gemini";
+		}
+
+		providers.push({
+			provider: providerName,
+			windows,
+		});
+	}
+
+	return providers;
+}
+
+export function findLsCredentials(
+	sessionId?: string,
+	dataDir?: string
+): { address: string; csrfToken: string } | undefined {
+	if (process.env.ANTIGRAVITY_LS_ADDRESS && process.env.ANTIGRAVITY_CSRF_TOKEN) {
+		return {
+			address: process.env.ANTIGRAVITY_LS_ADDRESS,
+			csrfToken: process.env.ANTIGRAVITY_CSRF_TOKEN,
+		};
+	}
+
+	if (dataDir) {
+		for (const fname of ["last_ls.json", "ls_credentials.json"]) {
+			const fpath = join(dataDir, fname);
+			if (existsSync(fpath)) {
+				try {
+					const parsed = JSON.parse(readFileSync(fpath, "utf-8"));
+					if (parsed?.address && parsed?.csrfToken) {
+						return { address: parsed.address, csrfToken: parsed.csrfToken };
+					}
+				} catch {}
+			}
+		}
+	}
+
+	try {
+		const entries = readdirSync("/proc");
+		let fallback: { address: string; csrfToken: string } | undefined;
+
+		for (const entry of entries) {
+			if (!/^\d+$/.test(entry)) continue;
+			try {
+				const env = readFileSync(`/proc/${entry}/environ`, "utf-8");
+				if (!env.includes("ANTIGRAVITY_CSRF_TOKEN=")) continue;
+
+				let address = "";
+				let csrfToken = "";
+				let convId = "";
+
+				for (const line of env.split("\0")) {
+					if (line.startsWith("ANTIGRAVITY_LS_ADDRESS=")) {
+						address = line.slice("ANTIGRAVITY_LS_ADDRESS=".length);
+					} else if (line.startsWith("ANTIGRAVITY_CSRF_TOKEN=")) {
+						csrfToken = line.slice("ANTIGRAVITY_CSRF_TOKEN=".length);
+					} else if (line.startsWith("ANTIGRAVITY_CONVERSATION_ID=")) {
+						convId = line.slice("ANTIGRAVITY_CONVERSATION_ID=".length);
+					}
+				}
+
+				if (address && csrfToken) {
+					if (sessionId && convId === sessionId) {
+						return { address, csrfToken };
+					}
+					if (!fallback) {
+						fallback = { address, csrfToken };
+					}
+				}
+			} catch {}
+		}
+		return fallback;
+	} catch {
+		return undefined;
+	}
+}
+
+let quotaCache: {
+	data: UsageProvider[];
+	sessionId?: string;
+	expiresAt: number;
+} | null = null;
+
+let credsCache: {
+	creds: { address: string; csrfToken: string };
+	sessionId?: string;
+	expiresAt: number;
+} | null = null;
+
+export async function fetchAgyQuota(
+	ctx: AgentContext,
+	dataDir: string,
+	modelName?: string
+): Promise<UsageProvider[] | undefined> {
+	const now = Date.now();
+	if (
+		quotaCache &&
+		now < quotaCache.expiresAt &&
+		(!ctx.sessionId || quotaCache.sessionId === ctx.sessionId)
+	) {
+		return quotaCache.data;
+	}
+
+	let creds: { address: string; csrfToken: string } | undefined;
+	if (
+		credsCache &&
+		now < credsCache.expiresAt &&
+		(!ctx.sessionId || credsCache.sessionId === ctx.sessionId)
+	) {
+		creds = credsCache.creds;
+	} else {
+		creds = findLsCredentials(ctx.sessionId, dataDir);
+		if (creds) {
+			credsCache = { creds, sessionId: ctx.sessionId, expiresAt: now + 30000 };
+		}
+	}
+
+	if (!creds) return undefined;
+
+	try {
+		const res = await fetch(
+			`http://${creds.address}/exa.language_server_pb.LanguageServerService/RetrieveUserQuotaSummary`,
+			{
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					"x-codeium-csrf-token": creds.csrfToken,
+				},
+				body: "{}",
+				signal: AbortSignal.timeout(300),
+			}
+		);
+
+		if (!res.ok) {
+			credsCache = null;
+			return undefined;
+		}
+
+		const json = await res.json();
+		const allProviders = parseAgyQuota(json);
+		if (allProviders.length === 0) return undefined;
+
+		const modelLower = (modelName ?? "").toLowerCase();
+		const is3p =
+			modelLower.includes("claude") ||
+			modelLower.includes("gpt") ||
+			modelLower.includes("opus") ||
+			modelLower.includes("sonnet");
+
+		const filtered = allProviders.filter((p) => {
+			if (p.provider === "Gemini") return true;
+			if (is3p) return true;
+			return p.windows.some((w) => w.pct > 0);
+		});
+
+		const result = filtered.length > 0 ? filtered : allProviders;
+		quotaCache = { data: result, sessionId: ctx.sessionId, expiresAt: now + 5000 };
+		return result;
+	} catch {
+		credsCache = null;
+		return quotaCache?.data;
+	}
+}
+
 export const agyAdapter: Adapter = {
 	id: "agy",
 	detect: (a) => a.agent === "agy" || a.agent === "antigravity",
@@ -536,6 +754,13 @@ export const agyAdapter: Adapter = {
 					snap.subagents = dbSubagents;
 				}
 			}
+
+			try {
+				const usage = await fetchAgyQuota(ctx, dataDir, snap.model?.name);
+				if (usage && usage.length > 0) {
+					snap.usage = usage;
+				}
+			} catch {}
 		} catch {}
 
 		return snap;

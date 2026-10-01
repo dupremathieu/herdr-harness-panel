@@ -1,12 +1,14 @@
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { renderPanel } from "../src/render";
 import {
 	agyAdapter,
 	formatModelName,
 	mapSubagentStatus,
 	parseAgyHistory,
 	parseAgyMcpConfig,
+	parseAgyQuota,
 	parseAgyTranscript,
 	parseModelSetting,
 } from "../src/adapters/agy";
@@ -21,6 +23,10 @@ const mcpFixture = readFileSync(
 );
 const historyFixture = readFileSync(
 	resolve(import.meta.dir, "../fixtures/agy/history.jsonl"),
+	"utf-8"
+);
+const quotaFixture = readFileSync(
+	resolve(import.meta.dir, "../fixtures/agy/quota.json"),
 	"utf-8"
 );
 
@@ -160,3 +166,63 @@ describe("agyAdapter", () => {
 		expect(snap.unsupported).toBeUndefined();
 	});
 });
+
+describe("parseAgyQuota", () => {
+	it("extracts Gemini quota windows, percentage used, and reset timestamps", () => {
+		const usage = parseAgyQuota(quotaFixture);
+		expect(usage.length).toBe(2);
+
+		const gemini = usage.find((u) => u.provider === "Gemini");
+		expect(gemini).toBeDefined();
+		expect(gemini?.windows).toEqual([
+			{
+				label: "5h",
+				pct: 18,
+				resetsAt: Math.floor(Date.parse("2026-10-01T21:44:55Z") / 1000),
+			},
+			{
+				label: "7d",
+				pct: 5,
+				resetsAt: Math.floor(Date.parse("2026-10-07T16:25:35Z") / 1000),
+			},
+		]);
+	});
+
+	it("handles malformed JSON and unexpected shapes safely", () => {
+		expect(parseAgyQuota("")).toEqual([]);
+		expect(parseAgyQuota("not-json")).toEqual([]);
+		expect(parseAgyQuota({})).toEqual([]);
+		expect(parseAgyQuota(null)).toEqual([]);
+		expect(parseAgyQuota({ response: { groups: [] } })).toEqual([]);
+		expect(parseAgyQuota({ response: { groups: [{ displayName: "Test", buckets: [] }] } })).toEqual([]);
+	});
+
+	it("computes pct correctly when remainingFraction is 1 or 0", () => {
+		const payload = {
+			groups: [
+				{
+					displayName: "Gemini Models",
+					buckets: [
+						{ bucketId: "b1", window: "5h", remainingFraction: 1 },
+						{ bucketId: "b2", window: "weekly", remainingFraction: 0 },
+					],
+				},
+			],
+		};
+		const usage = parseAgyQuota(payload);
+		expect(usage[0].windows[0].pct).toBe(0);
+		expect(usage[0].windows[1].pct).toBe(100);
+	});
+
+	it("renders Gemini quota in agy panel", () => {
+		const usage = parseAgyQuota(quotaFixture).filter((u) => u.provider === "Gemini");
+		const output = renderPanel({ harness: "agy", usage }, 40).join("\n");
+		expect(output).toContain("Usage · Gemini");
+		expect(output).toContain("5h");
+		expect(output).toContain("18% used · 82% left");
+		expect(output).toContain("7d");
+		expect(output).toContain("5% used · 95% left");
+		expect(output).toContain("reset");
+	});
+});
+
