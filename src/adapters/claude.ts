@@ -160,7 +160,10 @@ function readJson(path: string): any {
 	}
 }
 
+// Same precedence as the statusline: the payload's window size wins over the configured max.
 function contextLimit(payload: any): number | undefined {
+	const size = payload?.context_window?.context_window_size;
+	if (Number.isFinite(size) && size > 0) return size;
 	const config = readJson(
 		process.env.HARNESS_PANEL_STATUSLINE_CONFIG ??
 			join(homedir(), ".claude", "scripts", "statusline", "statusline.config.json"),
@@ -169,7 +172,7 @@ function contextLimit(payload: any): number | undefined {
 	if (configured?.usePayloadContextWindow &&
 		Number.isFinite(configured.maxContextTokens) && configured.maxContextTokens > 0)
 		return configured.maxContextTokens;
-	return payload?.context_window?.context_window_size;
+	return undefined;
 }
 
 function configuredMcp(cwd: string): string[] {
